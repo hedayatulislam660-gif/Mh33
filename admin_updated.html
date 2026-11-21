@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MH333 Crash Admin</title>
+<style>
+:root{--bg:#0f1020;--card:#1a1b33;--muted:#9aa0c8;--accent:#ffc23c;--red:#ff5b7f;--green:#43d19e}
+*{box-sizing:border-box}body{margin:auto;font-family:system-ui,sans-serif;background:var(--bg);color:#fff;padding:14px;max-width:560px}
+h1{font-size:19px}.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:13px}
+h2{font-size:14px;color:var(--muted);margin:0 0 10px;text-transform:uppercase}
+textarea,input,select{width:100%;background:#0f1020;color:#fff;border:1px solid #333660;border-radius:11px;padding:12px;font-size:16px}
+button{background:var(--accent);color:#111;border:0;border-radius:11px;padding:12px 14px;font-weight:700;font-size:15px;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}button.gray{background:#2a2c52;color:#fff}button.red{background:var(--red);color:#fff}
+.row{display:flex;gap:9px;margin-top:9px}.row>*{flex:1;min-width:0}.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{background:#2a2c52;border-radius:20px;padding:7px 10px}.chip b{color:var(--accent)}.chip button{padding:0 5px;background:none;color:var(--red);font-size:17px}
+.big{font-size:34px;font-weight:800;color:var(--accent)}small,.muted{color:var(--muted)}
+#status{padding:10px 12px;border-radius:10px;background:#252744;margin:10px 0;font-size:13px;overflow-wrap:anywhere}
+#status.ok{border:1px solid var(--green)}#status.bad{border:1px solid var(--red)}
+.notice{font-size:13px;line-height:1.5;color:var(--muted)}.suggestion{padding:9px 0;border-bottom:1px solid #2a2c52;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<h1>🚀 MH333 Crash Admin</h1>
+<div id="status">সার্ভারের সঙ্গে সংযোগ করা হয়নি।</div>
+<div id="lock" class="card">
+  <h2>Admin token</h2>
+  <input id="tk" type="password" autocomplete="current-password" placeholder="Render-এর ADMIN_TOKEN লিখুন">
+  <div class="row"><button id="loginBtn" onclick="login()">Login</button></div>
+  <p class="notice">এই পেজটি অবশ্যই আপনার Render ওয়েবসাইটের <b>/admin</b> ঠিকানা থেকে খুলবেন। ফোনে ডাউনলোড করা HTML ফাইল খুললে সার্ভারের API কাজ করবে না।</p>
+</div>
+<div id="app" hidden>
+  <div class="card"><h2>Next queued crash point</h2><div class="big" id="next">—</div><small id="ph">—</small></div>
+  <div class="card"><h2>Add crash points</h2><textarea id="nums" rows="3" placeholder="1.20 2.50 5.3 10"></textarea><div class="row"><button onclick="add(false)">Add to queue</button><button class="gray" onclick="add(true)">Add to front</button></div><p class="notice">একাধিক সংখ্যা স্পেস, কমা বা নতুন লাইনে লিখুন।</p></div>
+  <div class="card"><h2>Queue (<span id="qn">0</span>)</h2><div class="chips" id="queue"><small>Loading...</small></div><div class="row"><button class="red" onclick="clearQueue()">Clear queue</button></div></div>
+  <div class="card"><h2>Mode</h2><select id="mode" onchange="saveConfig()"><option value="queue">Queue first, then random</option><option value="range">Random in range</option><option value="random">Default random</option></select><div class="row"><div><small>Min</small><input id="min" type="number" min="1" step="0.01" onchange="saveConfig()"></div><div><small>Max</small><input id="max" type="number" min="1" step="0.01" onchange="saveConfig()"></div><div><small>Wait s</small><input id="wait" type="number" min="6" max="60" step="1" onchange="saveConfig()"></div></div></div>
+  <div class="card"><h2>Players: <span id="pl">0</span></h2><h2 style="margin-top:14px">Suggestions / Support</h2><div id="sug"><small>None</small></div></div>
+  <div class="card"><h2>Recent crashes</h2><div class="chips" id="log"><small>No rounds yet</small></div></div>
+  <div class="row"><button class="gray" onclick="refreshAll()">Refresh now</button><button class="red" onclick="logout()">Logout</button></div>
+</div>
+<script>
+'use strict';
+let T=sessionStorage.getItem('mh333_admin_token')||'';
+let stateTimer=null,suggestionTimer=null,busy=false;
+const $=id=>document.getElementById(id);
+function status(message,kind=''){const el=$('status');el.textContent=message;el.className=kind;}
+function esc(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function api(method,url,body){
+  const options={method,headers:{'x-admin-token':T}};
+  if(body!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
+  let response;
+  try{response=await fetch(url,options);}catch(e){status('সার্ভারের সঙ্গে সংযোগ হচ্ছে না। Render service চালু আছে কি না দেখুন।','bad');throw e;}
+  const raw=await response.text();let data;
+  try{data=raw?JSON.parse(raw):{};}catch(e){throw new Error('Server JSON পাঠায়নি: '+raw.slice(0,140));}
+  if(response.status===401){logout(false);status('Admin token ভুল অথবা অনুমোদন নেই। Render-এর ADMIN_TOKEN মিলিয়ে দেখুন।','bad');throw new Error('Unauthorized');}
+  if(!response.ok)throw new Error(data.error||('HTTP '+response.status));
+  if(data.error)throw new Error(data.error);
+  return data;
+}
+async function login(){
+  const token=$('tk').value.trim();if(!token){status('Admin token লিখুন।','bad');return;}
+  T=token;$('loginBtn').disabled=true;
+  try{const s=await api('GET','/api/state');sessionStorage.setItem('mh333_admin_token',T);$('lock').hidden=true;$('app').hidden=false;draw(s);status('সার্ভারের সঙ্গে সংযোগ সফল।','ok');startTimers();await loadSuggestions();}
+  catch(e){status('Login ব্যর্থ: '+e.message,'bad');}
+  finally{$('loginBtn').disabled=false;}
+}
+function logout(clear=true){if(clear)sessionStorage.removeItem('mh333_admin_token');T='';if(stateTimer)clearInterval(stateTimer);if(suggestionTimer)clearInterval(suggestionTimer);stateTimer=suggestionTimer=null;$('app').hidden=true;$('lock').hidden=false;}
+function startTimers(){if(stateTimer)clearInterval(stateTimer);if(suggestionTimer)clearInterval(suggestionTimer);stateTimer=setInterval(refreshState,2500);suggestionTimer=setInterval(loadSuggestions,10000);}
+async function refreshState(){if(!T||busy)return;try{const s=await api('GET','/api/state');draw(s);status('Connected • সর্বশেষ আপডেট: '+new Date().toLocaleTimeString(),'ok');}catch(e){status('ডেটা লোড হয়নি: '+e.message,'bad');}}
+async function loadSuggestions(){if(!T)return;try{const list=await api('GET','/api/suggestions');if(!Array.isArray(list))throw new Error('Suggestions response ভুল');$('sug').innerHTML=list.slice(0,30).map(e=>'<div class="suggestion"><b>'+esc(e.u)+'</b> ('+esc(e.kind)+'): '+esc(e.text)+'</div>').join('')||'<small>None</small>';}catch(e){status('Suggestions লোড হয়নি: '+e.message,'bad');}}
+async function add(front){const nums=$('nums').value.split(/[\s,;]+/).filter(Boolean).map(Number);if(!nums.length)return status('আগে crash point লিখুন।','bad');if(nums.some(n=>!Number.isFinite(n)||n<1||n>1000))return status('প্রতিটি crash point 1 থেকে 1000-এর মধ্যে দিন।','bad');try{busy=true;const s=await api('POST','/api/queue',{nums,front});draw(s);$('nums').value='';status('Crash point queue-তে যোগ হয়েছে।','ok');}catch(e){status('যোগ করা যায়নি: '+e.message,'bad');}finally{busy=false;}}
+async function removePoint(i){try{busy=true;draw(await api('DELETE','/api/queue/'+i));status('Queue থেকে বাদ দেওয়া হয়েছে।','ok');}catch(e){status('বাদ দেওয়া যায়নি: '+e.message,'bad');}finally{busy=false;}}
+async function clearQueue(){if(!confirm('সম্পূর্ণ queue মুছে ফেলবেন?'))return;try{busy=true;draw(await api('POST','/api/queue/clear',{}));status('Queue পরিষ্কার হয়েছে।','ok');}catch(e){status('Queue পরিষ্কার হয়নি: '+e.message,'bad');}finally{busy=false;}}
+async function saveConfig(){const body={mode:$('mode').value,min:$('min').value,max:$('max').value,wait:$('wait').value};try{busy=true;draw(await api('POST','/api/config',body));status('Settings সংরক্ষণ হয়েছে।','ok');}catch(e){status('Settings সংরক্ষণ হয়নি: '+e.message,'bad');}finally{busy=false;}}
+function draw(s){if(!s||!Array.isArray(s.queue)||!Array.isArray(s.log))return;$('pl').textContent=s.players??0;$('qn').textContent=s.queue.length;
+ $('queue').innerHTML=s.queue.map((v,i)=>'<span class="chip"><b>'+Number(v).toFixed(2)+'x</b> <button aria-label="Remove" onclick="removePoint('+i+')">×</button></span>').join('')||'<small>Empty</small>';
+ $('log').innerHTML=s.log.map(v=>'<span class="chip">'+Number(v).toFixed(2)+'x</span>').join('')||'<small>No rounds yet</small>';
+ const hasQueued=s.mode==='queue'&&s.queue.length>0;$('next').textContent=hasQueued?Number(s.queue[0]).toFixed(2)+'x':'Random';$('ph').textContent='Round: '+(s.phase||'unknown');
+ const active=document.activeElement;['mode','min','max','wait'].forEach(k=>{if(active!==$(k)&&s[k]!==undefined)$(k).value=s[k];});}
+async function refreshAll(){await refreshState();await loadSuggestions();}
+$('tk').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+if(location.protocol==='file:'||location.protocol==='content:'){status('আপনি HTML ফাইলটি ফোন থেকে সরাসরি খুলেছেন। Render-এর https://আপনার-সাইট/admin ঠিকানা খুলুন।','bad');}
+else if(T){$('tk').value=T;login();}
+</script>
+</body>
+</html>
